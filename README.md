@@ -5,8 +5,8 @@
 **Projektname:** HTL Pixelboard
 
 **Mitwirkende:**  
-- Dein Name  
-- Weitere Mitwirkende
+- Gabriel Winkler,  
+- Raphael Ortner, Clemens Walser
 
 ---
 
