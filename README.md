@@ -115,8 +115,7 @@ const int JOYSTICK_Y  = 35;  // 📊 Y-Achse (Analog)
 **HTL Anichstraße Innsbruck**  
 *Höhere Technische Bundeslehranstalt*
 
-🌐 [www.htl.tirol](https://www.htl.tirol)  
-📧 office@htl.tirol
+🌐 [www.htlinn.ac.at](https://www.htlinn.ac.at)  
 
 ---
 
