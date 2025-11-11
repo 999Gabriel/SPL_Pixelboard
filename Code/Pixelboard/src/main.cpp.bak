@@ -1,0 +1,55 @@
+#include <Arduino.h>
+// Joystick Pin-Definitionen
+const int JOYSTICK_SW = 32;  // Joystick Switch (Button)
+const int JOYSTICK_X = 34;   // Joystick X-Achse (analog)
+const int JOYSTICK_Y = 35;   // Joystick Y-Achse (analog)
+
+// Variablen für Joystick-Werte
+int xValue = 0;
+int yValue = 0;
+bool switchPressed = false;
+
+void setup() {
+    // Serial Monitor starten
+    Serial.begin(115200);
+    delay(1000);
+
+    Serial.println("\n=== Joystick Test gestartet ===");
+
+    // Pin-Konfiguration
+    pinMode(JOYSTICK_SW, INPUT_PULLUP);  // Switch mit Pull-up
+    pinMode(JOYSTICK_X, INPUT);          // Analog Input
+    pinMode(JOYSTICK_Y, INPUT);          // Analog Input
+
+    Serial.println("Pin-Konfiguration abgeschlossen!");
+    Serial.println("Joystick-Werte werden alle 200ms ausgegeben...\n");
+}
+
+void loop() {
+    // Joystick-Werte lesen
+    xValue = analogRead(JOYSTICK_X);     // 0-4095
+    yValue = analogRead(JOYSTICK_Y);     // 0-4095
+    switchPressed = !digitalRead(JOYSTICK_SW);  // LOW = gedrückt (wegen Pull-up)
+
+    // Werte auf Serial Monitor ausgeben
+    Serial.print("X: ");
+    Serial.print(xValue);
+    Serial.print(" (");
+    Serial.print(map(xValue, 0, 4095, -100, 100));
+    Serial.print("%) | Y: ");
+    Serial.print(yValue);
+    Serial.print(" (");
+    Serial.print(map(yValue, 0, 4095, -100, 100));
+    Serial.print("%) | Switch: ");
+    Serial.print(switchPressed ? "GEDRÜCKT" : "FREI");
+
+    // Zusätzliche Anzeige bei Switch-Druck
+    if (switchPressed) {
+        Serial.print(" | >>> BUTTON AKTIVIERT! <<<");
+    }
+
+    Serial.println();
+
+    // 200ms warten
+    delay(200);
+}
