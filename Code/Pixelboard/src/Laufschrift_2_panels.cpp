@@ -6,17 +6,20 @@
  *   - LEDText rendert auf 64x8 (Fonthöhe 8)
  *   - Wir skalieren vertikal auf 64x16 (2x)
  *   - Danach verschieben wir den kompletten Text um 1 Zeile nach unten,
- *     sodass Zeile 0 schwarz bleibt.
+ *     sodass Zeile 0 oben schwarz bleibt.
  *
- * Physische Panels:
- *   - Oberes Panel:  32x8, VERTICAL_ZIGZAG_MATRIX, an GPIO 25
- *   - Unteres Panel: 32x8, VERTICAL_ZIGZAG_MATRIX, an GPIO 26, kopfüber montiert
+ * Physische Panels (NACH dem Umbau!):
+ *   - Panel an PIN 26 ist JETZT oben.
+ *   - Panel an PIN 25 ist JETZT unten.
  *
- * Mapping:
- *   - Oben:  bekommt die UNTERE Hälfte (y=8..15) des 64x16-Bildes
- *   - Unten: bekommt die OBERE Hälfte (y=0..7) des 64x16-Bildes
- *   - Beide Panels werden horizontal gespiegelt (y-Achse)
- *   - Unteres Panel zusätzlich um 180° gedreht
+ * Mapping im Code:
+ *   - panelTop    -> ledsBottom -> physisch oben (Pin 26)
+ *   - panelBottom -> ledsTop    -> physisch unten (Pin 25)
+ *
+ * Korrekturen:
+ *   - Beide Panels werden horizontal gespiegelt (y-Achse).
+ *   - Das Panel, das kopfüber montiert ist (früher unten, jetzt oben),
+ *     wird um 180° gedreht -> rotatePanel180(panelTop).
  */
 
 #include <FastLED.h>
@@ -25,8 +28,8 @@
 #include <FontMatrise.h>
 
 // --- Hardware-Konfiguration --------------------------------------------------
-#define pinTop         25
-#define pinBottom      26
+#define pinTop         25   // alter "Top"-Pin, jetzt physisch unten
+#define pinBottom      26   // alter "Bottom"-Pin, jetzt physisch oben
 
 #define panelWidth     32
 #define panelHeight     8
@@ -56,16 +59,16 @@ cLEDMatrix<canvasWidth16,
            HORIZONTAL_MATRIX> canvas16;
 
 // --- Physische Panels --------------------------------------------------------
+// ACHTUNG: ledsTop = Pin 25 (physisch unten), ledsBottom = Pin 26 (physisch oben)
 CRGB ledsTop[ledsPerPanel];
 CRGB ledsBottom[ledsPerPanel];
 
 cLEDMatrix<panelWidth,
            panelHeight,
-           VERTICAL_ZIGZAG_MATRIX> panelTop;
-
+           VERTICAL_ZIGZAG_MATRIX> panelTop;     // logisches TOP
 cLEDMatrix<panelWidth,
            panelHeight,
-           VERTICAL_ZIGZAG_MATRIX> panelBottom;
+           VERTICAL_ZIGZAG_MATRIX> panelBottom;  // logisches BOTTOM
 
 // --- Laufschrift & Timing ----------------------------------------------------
 cLEDText scrollingText;
@@ -100,7 +103,7 @@ void setup() {
   initAnzeige();
   startSequenz();
 
-  Serial.println(F("Laufschrift 64x16 über zwei Panels gestartet."));
+  Serial.println(F("Laufschrift 64x16 über zwei Panels gestartet (Panel-Positionen getauscht)."));
 }
 
 // --- Loop --------------------------------------------------------------------
@@ -111,14 +114,19 @@ void loop() {
 
 // --- Implementierung ---------------------------------------------------------
 static void initAnzeige() {
+  // FastLED-Controller:
+  // ledsTop    hängt an pinTop    (25)  -> physisch UNTEN
+  // ledsBottom hängt an pinBottom (26)  -> physisch OBEN
   FastLED.addLeds<chipset, pinTop,    colorOrder>(ledsTop,    ledsPerPanel);
   FastLED.addLeds<chipset, pinBottom, colorOrder>(ledsBottom, ledsPerPanel);
   FastLED.setBrightness(brightness);
   FastLED.clear(true);
 
-  panelTop.SetLEDArray(ledsTop);
-  panelBottom.SetLEDArray(ledsBottom);
+  // WICHTIG: logisches panelTop zeigt jetzt auf LEDs des PHYSISCH OBENEN Panels:
+  panelTop.SetLEDArray(ledsBottom);   // Pin 26, physisch oben
+  panelBottom.SetLEDArray(ledsTop);   // Pin 25, physisch unten
 
+  // Virtuelle Canvas-Flächen
   canvas8.SetLEDArray(canvas8Leds);
   canvas16.SetLEDArray(canvas16Leds);
 
@@ -150,8 +158,7 @@ static void updateAnzeige() {
   // 2) Auf 64x16 skalieren (jede Zeile verdoppeln)
   scaleVertTo16();
 
-  // 3) Gesamtes Bild um 1 Zeile nach unten verschieben,
-  //    damit Zeile 0 oben schwarz bleibt
+  // 3) Gesamtes Bild um 1 Zeile nach unten verschieben
   verschiebeCanvas16EineZeileNachUnten();
 
   // 4) 64x16 → zwei 32x8 Panels mappen
@@ -178,13 +185,7 @@ static void scaleVertTo16() {
 
 /**
  * @brief Verschiebt das 64x16-Bild um 1 Zeile nach unten:
- *        - Zeilen 15..1 bekommen den Inhalt von 14..0
- *        - Zeile 0 oben wird schwarz
- *
- * Ergebnis:
- *   - Ganz oben (y=0) bleibt eine schwarze Linie
- *   - Der unterste ursprüngliche Pixel geht verloren
- *     (optisch kaum sichtbar, aber du bekommst den Top-Rand).
+ *        Zeile 0 wird schwarz, 15 bekommt 14, ...
  */
 static void verschiebeCanvas16EineZeileNachUnten() {
   for (int y = canvasHeight16 - 1; y > 0; y--) {
@@ -193,7 +194,6 @@ static void verschiebeCanvas16EineZeileNachUnten() {
     }
   }
 
-  // Zeile 0 oben löschen
   for (uint8_t x = 0; x < canvasWidth16; x++) {
     canvas16(x, 0) = CRGB::Black;
   }
@@ -202,14 +202,16 @@ static void verschiebeCanvas16EineZeileNachUnten() {
 /**
  * @brief Mapped 64x16 → beide Panels + Orientierungsfix.
  *
- * Logik:
- *   - Oben (physisch TOP) bekommt logisches UNTEN (y=8..15)
- *   - Unten (physisch BOTTOM) bekommt logisches OBEN (y=0..7)
- *   - Beide Panels horizontal spiegeln
- *   - Unteres Panel zusätzlich um 180° drehen
+ * Logik bleibt wie vorher:
+ *   - panelTop (logisch oben, physisch oben an Pin 26) bekommt logisches UNTEN (y=8..15)
+ *   - panelBottom (logisch unten, physisch unten an Pin 25) bekommt logisches OBEN (y=0..7)
+ *
+ * Korrekturen:
+ *   - Beide Panels horizontal spiegeln (y-Achse)
+ *   - panelTop (das kopfüber Panel, früher unten) um 180° drehen
  */
 static void blitPanelsFromCanvas16() {
-  // Top-Panel: logisches unten → physisch oben
+  // Oberes physisches Panel (Pin 26) bekommt logisches unten
   for (uint8_t y = 0; y < panelHeight; y++) {
     const uint8_t ySrc = y + panelHeight; // 8..15
     for (uint8_t x = 0; x < panelWidth; x++) {
@@ -217,7 +219,7 @@ static void blitPanelsFromCanvas16() {
     }
   }
 
-  // Bottom-Panel: logisches oben → physisch unten
+  // Unteres physisches Panel (Pin 25) bekommt logisches oben
   for (uint8_t y = 0; y < panelHeight; y++) {
     const uint8_t ySrc = y; // 0..7
     for (uint8_t x = 0; x < panelWidth; x++) {
@@ -225,17 +227,14 @@ static void blitPanelsFromCanvas16() {
     }
   }
 
-  // y-Achse-Spiegelung auf beiden Panels
+  // Spiegelung an der y-Achse für beide Panels
   mirrorPanelHorizontal(panelTop);
   mirrorPanelHorizontal(panelBottom);
 
-  // Unteres Panel wegen kopfüber Montage drehen
-  rotatePanel180(panelBottom);
+  // Kopfüber montiertes Panel (früher unten, jetzt oben) drehen
+  rotatePanel180(panelTop);
 }
 
-/**
- * @brief Horizontale Spiegelung (links↔rechts) für ein Panel.
- */
 static void mirrorPanelHorizontal(
   cLEDMatrix<panelWidth, panelHeight, VERTICAL_ZIGZAG_MATRIX> &panel
 ) {
@@ -249,9 +248,6 @@ static void mirrorPanelHorizontal(
   }
 }
 
-/**
- * @brief 180°-Drehung für ein Panel.
- */
 static void rotatePanel180(
   cLEDMatrix<panelWidth, panelHeight, VERTICAL_ZIGZAG_MATRIX> &panel
 ) {
@@ -269,25 +265,22 @@ static void rotatePanel180(
 
 /**
  * @brief Starttest: oben rot, unten blau, dann beide weiß, dann clear.
+ * Beachte: panelTop = ledsBottom (Pin 26), panelBottom = ledsTop (Pin 25).
  */
 static void startSequenz() {
-  fill_solid(ledsTop,    ledsPerPanel, CRGB::Black);
-  fill_solid(ledsBottom, ledsPerPanel, CRGB::Black);
-  FastLED.show();
-  delay(200);
-
-  fill_solid(ledsTop,    ledsPerPanel, CRGB::Red);
-  fill_solid(ledsBottom, ledsPerPanel, CRGB::Blue);
+  // Oben = ledsBottom, unten = ledsTop
+  fill_solid(ledsBottom, ledsPerPanel, CRGB::Red);   // oben rot
+  fill_solid(ledsTop,    ledsPerPanel, CRGB::Blue);  // unten blau
   FastLED.show();
   delay(600);
 
-  fill_solid(ledsTop,    ledsPerPanel, CRGB::White);
   fill_solid(ledsBottom, ledsPerPanel, CRGB::White);
+  fill_solid(ledsTop,    ledsPerPanel, CRGB::White);
   FastLED.show();
   delay(400);
 
-  fill_solid(ledsTop,    ledsPerPanel, CRGB::Black);
   fill_solid(ledsBottom, ledsPerPanel, CRGB::Black);
+  fill_solid(ledsTop,    ledsPerPanel, CRGB::Black);
   FastLED.show();
 }
 
