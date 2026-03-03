@@ -1,0 +1,128 @@
+/**
+ * PixelBoard Main Menu System - SIMPLIFIED TEST VERSION
+ * ESP32 + LED Matrix Test
+ */
+
+#include <Arduino.h>
+#include "DisplayManager.h"
+#include "ClockApp.h"
+#include "Joystick/Joystick.h"
+
+const char* WIFI_SSID = "GabPhone";
+const char* WIFI_PASSWORD = "Covquf012wud";
+
+#define JOYSTICK_BTN_PIN  32
+#define JOYSTICK_X_PIN    34
+#define JOYSTICK_Y_PIN    35
+#define JOYSTICK_DEBOUNCE 50
+
+Joystick* joystick = nullptr;
+DisplayManager* display = nullptr;
+ClockApp* clockApp = nullptr;
+bool menuOpen = false;
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  Serial.println(F("\n========================================"));
+  Serial.println(F("   LED MATRIX TEST"));
+  Serial.println(F("========================================\n"));
+
+  // Display initialisieren
+  Serial.println(F("Initialisiere Display..."));
+  display = DisplayManager::getInstance();
+  display->init();
+
+  // Test: Alle LEDs kurz aufleuchten lassen
+  Serial.println(F("LED Test: Alle LEDs ROT"));
+  for (int x = 0; x < 64; x++) {
+    for (int y = 0; y < 16; y++) {
+      display->setPixel(x, y, CRGB::Red);
+    }
+  }
+  display->show();
+  delay(1000);
+
+  display->clear();
+  display->show();
+  delay(500);
+
+  // Joystick initialisieren
+  Serial.println(F("Initialisiere Joystick..."));
+  joystick = new Joystick(JOYSTICK_BTN_PIN, JOYSTICK_X_PIN, JOYSTICK_Y_PIN, JOYSTICK_DEBOUNCE);
+
+  // ClockApp initialisieren
+  Serial.println(F("Initialisiere Uhr..."));
+  clockApp = new ClockApp(WIFI_SSID, WIFI_PASSWORD);
+  clockApp->init();
+
+  Serial.println(F("\n========================================"));
+  Serial.println(F("   System bereit!"));
+  Serial.println(F("========================================"));
+  Serial.println(F("Display Layout:"));
+  Serial.println(F("  Zeile 0:     Weißer Rand (Orientierung)"));
+  Serial.println(F("  Zeilen 4-11: Zeit in Rot"));
+  Serial.println(F(""));
+  Serial.println(F("Steuerung:"));
+  Serial.println(F("  Joystick-Werte werden im Serial Monitor angezeigt"));
+  Serial.println(F("========================================\n"));
+}
+
+void loop() {
+  static unsigned long lastUpdate = 0;
+  static unsigned long lastJoystickDebug = 0;
+  unsigned long now = millis();
+
+  // Joystick aktualisieren
+  joystick->update();
+
+  // Clock aktualisieren
+  if (now - lastUpdate >= 30) {
+    lastUpdate = now;
+    clockApp->update();
+  }
+
+  // Display rendern
+  display->clear();
+
+  // 1. Weißer Rand oben (Zeile 0)
+  for (int x = 0; x < display->getWidth(); x++) {
+    display->setPixel(x, 0, CRGB::White);
+  }
+
+  // 2. Zeit rendern (ClockApp)
+  clockApp->render();
+
+  // 3. Display anzeigen
+  display->show();
+
+  // Joystick Debug-Ausgabe alle 500ms
+  if (now - lastJoystickDebug >= 500) {
+    lastJoystickDebug = now;
+    int xVal = joystick->getXValue();
+    int yVal = joystick->getYValue();
+    bool pressed = joystick->isPressed();
+
+    Serial.print(F("Joystick - X: "));
+    Serial.print(xVal);
+    Serial.print(F(" Y: "));
+    Serial.print(yVal);
+    Serial.print(F(" Button: "));
+    Serial.println(pressed ? F("GEDRÜCKT") : F("NICHT gedrückt"));
+  }
+
+  // Teste kurzen und langen Tastendruck
+  if (joystick->wasPressed()) {
+    Serial.println(F(">>> KURZER TASTENDRUCK erkannt!"));
+  }
+
+  if (joystick->wasLongPressed(1000)) {
+    Serial.println(F(">>> LANGER TASTENDRUCK erkannt!"));
+    menuOpen = !menuOpen;
+    Serial.print(F("Menü ist jetzt: "));
+    Serial.println(menuOpen ? F("OFFEN") : F("GESCHLOSSEN"));
+  }
+
+  delay(20); // 50 FPS
+}
