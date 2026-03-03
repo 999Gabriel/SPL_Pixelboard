@@ -1,457 +1,329 @@
-/**
- * @file Laufschrift_DualPanel_64x16_Wttr.cpp
- * @brief Große Laufschrift über zwei 8x32 Panels (gesamt 32x16),
- *        Text kommt dynamisch von der kostenlosen wttr.in-API.
- *
- * Display-Setup:
- *   - 2x Panels 8x32 (VERTICAL_ZIGZAG_MATRIX)
- *   - Pin 26: physisch oben, kopfüber montiert
- *   - Pin 25: physisch unten
- *   - Virtuelles Canvas: 64x8 → vertikal skaliert auf 64x16
- *   - Mapping & Spiegelung so wie dein funktionierender Code.
- */
-
-#include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-
 #include <FastLED.h>
 #include <LEDMatrix.h>
-#include <LEDText.h>
-#include <FontMatrise.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
-// -----------------------------------------------------------------------------
-// WLAN-Konfiguration
-// -----------------------------------------------------------------------------
-const char* wifiSsid     = "HTL-IoT";
-const char* wifiPassword = "Internet0fThings!";
+// WLAN-Zugangsdaten (iPhone Hotspot)
+// WICHTIG: iPhone Hotspot muss auf 2.4 GHz stehen!
+// Einstellungen > Persoenlicher Hotspot > "Kompatibilitaet maximieren" AKTIVIEREN
+const char* ssid = "GabPhone";
+const char* password = "Covquf012wud";
 
-// -----------------------------------------------------------------------------
-// Wetter-API: wttr.in (gratis, kein Key nötig)
-// -----------------------------------------------------------------------------
-// ACHTUNG: jetzt HTTPS benutzen, damit Cloudflare / Server mitspielen.
-const char* weatherApiUrl =
-  "https://wttr.in/Innsbruck?format=j1";
+// OpenWeatherMap API
+const char* apiKey = "711b0df3e461b3c35e8ca67b28920759";
+const char* city = "Innsbruck,AT";
+String apiUrl = "http://api.openweathermap.org/data/2.5/weather?q=" + String(city) + "&units=metric&appid=" + String(apiKey);
 
-// Wetter-Update-Intervall (z. B. alle 10 Minuten)
-const uint32_t weatherUpdateIntervalMs = 10UL * 60UL * 1000UL;
-uint32_t lastWeatherUpdateMs = 0;
+// Matrix-Konfiguration
+#define DATA_PIN_UPPER 25
+#define DATA_PIN_LOWER 26
+#define NUM_LEDS_PER_STRIP 256
+#define MATRIX_WIDTH 32
+#define MATRIX_HEIGHT 16
+#define MATRIX_TYPE VERTICAL_ZIGZAG_MATRIX
 
-// -----------------------------------------------------------------------------
-// LED / Panel-Konfiguration
-// -----------------------------------------------------------------------------
-#define pinTop         25   // physisch unten
-#define pinBottom      26   // physisch oben
+CRGB leds_upper[NUM_LEDS_PER_STRIP];
+CRGB leds_lower[NUM_LEDS_PER_STRIP];
+CRGB leds_array[NUM_LEDS_PER_STRIP * 2];
+cLEDMatrix<-MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> leds;
 
-#define panelWidth     32
-#define panelHeight     8
+// LED Mapping-Struktur
+struct LedAddress {
+  CRGB* array;
+  int index;
+};
 
-#define ledsPerPanel   (panelWidth * panelHeight)
+// Mapping (Original aus funktionierendem Snake-Code)
+LedAddress mapXY(int x, int y) {
+  LedAddress result;
+  int led;
 
-#define brightness     25
-#define colorOrder     GRB
-#define chipset        WS2812
-
-// Virtuelle Canvas-Größen
-#define canvasWidth8   64
-#define canvasHeight8   8
-
-#define canvasWidth16  64
-#define canvasHeight16 16
-
-// --- Virtuelle Buffers -------------------------------------------------------
-CRGB canvas8Leds[canvasWidth8 * canvasHeight8];
-CRGB canvas16Leds[canvasWidth16 * canvasHeight16];
-
-cLEDMatrix<canvasWidth8,
-           canvasHeight8,
-           HORIZONTAL_MATRIX> canvas8;
-
-cLEDMatrix<canvasWidth16,
-           canvasHeight16,
-           HORIZONTAL_MATRIX> canvas16;
-
-// --- Physische Panels --------------------------------------------------------
-CRGB ledsTop[ledsPerPanel];      // Pin 25, physisch unten
-CRGB ledsBottom[ledsPerPanel];   // Pin 26, physisch oben
-
-cLEDMatrix<panelWidth,
-           panelHeight,
-           VERTICAL_ZIGZAG_MATRIX> panelTop;     // logisch oben
-cLEDMatrix<panelWidth,
-           panelHeight,
-           VERTICAL_ZIGZAG_MATRIX> panelBottom;  // logisch unten
-
-// --- Laufschrift & Timing ----------------------------------------------------
-cLEDText scrollingText;
-
-// Puffer für aktuellen Lauftext
-static char laufTextBuffer[160];
-static size_t laufTextLen = 0;
-
-uint32_t lastFrameMs = 0;
-const uint16_t frameIntervalMs = 5;
-
-// -----------------------------------------------------------------------------
-// Funktions-Prototypen
-// -----------------------------------------------------------------------------
-static void initAnzeige();
-static void updateAnzeige();
-static void startSequenz();
-static void debugAusgabe();
-
-static void scaleVertTo16();
-static void verschiebeCanvas16EineZeileNachUnten();
-static void blitPanelsFromCanvas16();
-
-static void mirrorPanelHorizontal(
-  cLEDMatrix<panelWidth, panelHeight, VERTICAL_ZIGZAG_MATRIX> &panel);
-
-static void rotatePanel180(
-  cLEDMatrix<panelWidth, panelHeight, VERTICAL_ZIGZAG_MATRIX> &panel);
-
-// WLAN / Wetter
-static void connectToWifi();
-static void updateWeatherIfNeeded();
-static bool fetchWeatherAndBuildText();
-static void setLaufschriftText(const String& text);
-
-// -----------------------------------------------------------------------------
-// Setup
-// -----------------------------------------------------------------------------
-void setup() {
-  Serial.begin(115200);
-  delay(50);
-
-  connectToWifi();
-  initAnzeige();
-  startSequenz();
-
-  // Erstes Wetter-Update direkt beim Start
-  if (!fetchWeatherAndBuildText()) {
-    setLaufschriftText("   Wetter API Fehler, nutze Fallback-Text   ");
+  if (y < 8) {
+    led = x * 8 + ((x % 2 == 0) ? y : 7 - y);
+    result.array = leds_lower;
+    result.index = led;
+  } else {
+    int flippedX = MATRIX_WIDTH - 1 - x;
+    int flippedY = 15 - y;
+    led = flippedX * 8 + ((flippedX % 2 == 0) ? flippedY : 7 - flippedY);
+    result.array = leds_upper;
+    result.index = led;
   }
-  lastWeatherUpdateMs = millis();
-
-  Serial.println(F("Laufschrift 64x16 mit wttr.in-Wetterdaten gestartet."));
+  return result;
 }
 
-// -----------------------------------------------------------------------------
-// Loop
-// -----------------------------------------------------------------------------
-void loop() {
-  updateAnzeige();
-  updateWeatherIfNeeded();
-  debugAusgabe();
-}
+// Font 3x5 (optimiert für Punkt & Einheiten)
+const byte font3x5[][5] = {
+  {0b111, 0b101, 0b101, 0b101, 0b111},  // 0
+  {0b010, 0b110, 0b010, 0b010, 0b111},  // 1
+  {0b111, 0b001, 0b111, 0b100, 0b111},  // 2
+  {0b111, 0b001, 0b111, 0b001, 0b111},  // 3
+  {0b101, 0b101, 0b111, 0b001, 0b001},  // 4
+  {0b111, 0b100, 0b111, 0b001, 0b111},  // 5
+  {0b111, 0b100, 0b111, 0b101, 0b111},  // 6
+  {0b111, 0b001, 0b010, 0b100, 0b100},  // 7
+  {0b111, 0b101, 0b111, 0b101, 0b111},  // 8
+  {0b111, 0b101, 0b111, 0b001, 0b111},  // 9
+  {0b000, 0b000, 0b000, 0b010, 0b000},  // . (10)
+  {0b011, 0b100, 0b100, 0b100, 0b011},  // C (11)
+  {0b101, 0b001, 0b010, 0b100, 0b101},  // % (12)
+  {0b000, 0b110, 0b101, 0b101, 0b101},  // m (13)
+  {0b001, 0b010, 0b010, 0b100, 0b000},  // / (14)
+  {0b111, 0b100, 0b111, 0b001, 0b111},  // s (15)
+  {0b000, 0b010, 0b000, 0b000, 0b000},  // ° (16) - Gradzeichen (kleiner Punkt oben)
+  {0b000, 0b000, 0b111, 0b000, 0b000},  // - (17) - Minuszeichen
+};
 
-// -----------------------------------------------------------------------------
-// Anzeige-Logik
-// -----------------------------------------------------------------------------
-static void initAnzeige() {
-  // Zwei FastLED-Controller:
-  // ledsTop    -> pinTop    (25)  -> physisch unten
-  // ledsBottom -> pinBottom (26)  -> physisch oben
-  FastLED.addLeds<chipset, pinTop,    colorOrder>(ledsTop,    ledsPerPanel);
-  FastLED.addLeds<chipset, pinBottom, colorOrder>(ledsBottom, ledsPerPanel);
-  FastLED.setBrightness(brightness);
-  FastLED.clear(true);
+// Werte
+float temperature = 0.0;
+int humidity = 0;
+float windSpeed = 0.0;
+bool dataReceived = false;
 
-  // Wichtig: logisches panelTop zeigt auf physisch OBEN
-  panelTop.SetLEDArray(ledsBottom);   // Pin 26
-  panelBottom.SetLEDArray(ledsTop);   // Pin 25
-
-  // Canvas binden
-  canvas8.SetLEDArray(canvas8Leds);
-  canvas16.SetLEDArray(canvas16Leds);
-
-  // LEDText vorbereiten, Starttext
-  scrollingText.SetFont(MatriseFontData);
-  scrollingText.Init(&canvas8,
-                     canvas8.Width(),
-                     canvas8.Height(),
-                     0, 0);
-  scrollingText.SetScrollDirection(SCROLL_LEFT);
-  scrollingText.SetFrameRate(30);
-  scrollingText.SetTextColrOptions(COLR_RGB | COLR_SINGLE,
-                                   255, 0, 255);
-
-  setLaufschriftText("   Verbinde WLAN & lade Wetterdaten...   ");
-}
-
-static void updateAnzeige() {
-  const uint32_t now = millis();
-  if (now - lastFrameMs < frameIntervalMs) return;
-  lastFrameMs = now;
-
-  // 1) Text auf 64x8 rendern
-  if (scrollingText.UpdateText() == -1) {
-    scrollingText.SetText((unsigned char*)laufTextBuffer,
-                          laufTextLen);
+// Alle LEDs sicher loeschen
+void clearAll() {
+  for (int i = 0; i < NUM_LEDS_PER_STRIP; i++) {
+    leds_upper[i] = CRGB::Black;
+    leds_lower[i] = CRGB::Black;
   }
-
-  // 2) Auf 64x16 skalieren
-  scaleVertTo16();
-
-  // 3) Eine Zeile nach unten schieben (oben schwarz)
-  verschiebeCanvas16EineZeileNachUnten();
-
-  // 4) 64x16 → zwei Panels
-  blitPanelsFromCanvas16();
-
-  FastLED.show();
 }
 
-static void scaleVertTo16() {
-  for (uint8_t y8 = 0; y8 < canvasHeight8; y8++) {
-    const uint8_t y16a = 2 * y8;
-    const uint8_t y16b = y16a + 1;
+// Einzelnen Pixel setzen via mapXY (Display um 180° gedreht)
+void setPixel(int x, int y, CRGB color) {
+  if (x < 0 || x >= MATRIX_WIDTH || y < 0 || y >= MATRIX_HEIGHT) return;
+  LedAddress addr = mapXY(MATRIX_WIDTH - 1 - x, MATRIX_HEIGHT - 1 - y);
+  addr.array[addr.index] = color;
+}
 
-    for (uint8_t x = 0; x < canvasWidth8; x++) {
-      const CRGB c = canvas8(x, y8);
-      canvas16(x, y16a) = c;
-      canvas16(x, y16b) = c;
+// Zeichen anzeigen
+// Font row 0 = oberste Zeile des Zeichens, y = Display-Y der obersten Zeile
+void drawChar(int index, int x, int y, CRGB color) {
+  if (index < 0 || index >= 18) return;
+  for (int row = 0; row < 5; row++) {
+    for (int col = 0; col < 3; col++) {
+      if ((font3x5[index][row] >> (2 - col)) & 0x01) {
+        setPixel(x + col, y + row, color);
+      }
     }
   }
 }
 
-static void verschiebeCanvas16EineZeileNachUnten() {
-  for (int y = canvasHeight16 - 1; y > 0; y--) {
-    for (uint8_t x = 0; x < canvasWidth16; x++) {
-      canvas16(x, y) = canvas16(x, y - 1);
-    }
+// Textbreite berechnen (fuer Zentrierung)
+int getTextWidth(String text) {
+  int width = 0;
+  for (unsigned int i = 0; i < text.length(); i++) {
+    char c = text.charAt(i);
+    if (c >= '0' && c <= '9') width += 4;
+    else if (c == '.') width += 4;
+    else if (c == 'C') width += 4;
+    else if (c == '%') width += 4;
+    else if (c == 'm') width += 4;
+    else if (c == '/') width += 4;
+    else if (c == 's') width += 4;
+    else if (c == '*') width += 4;  // ° Gradzeichen
+    else if (c == '-') width += 4;
+    else if (c == ' ') width += 2;  // Leerzeichen schmaler
   }
-
-  for (uint8_t x = 0; x < canvasWidth16; x++) {
-    canvas16(x, 0) = CRGB::Black;
-  }
+  // Letztes Zeichen hat keinen Trailing-Space, also -1
+  if (width > 0) width -= 1;
+  return width;
 }
 
-static void blitPanelsFromCanvas16() {
-  // Oberes physisches Panel (Pin 26) bekommt logisches UNTEN (y=8..15)
-  for (uint8_t y = 0; y < panelHeight; y++) {
-    const uint8_t ySrc = y + panelHeight; // 8..15
-    for (uint8_t x = 0; x < panelWidth; x++) {
-      panelTop(x, y) = canvas16(x, ySrc);
-    }
-  }
+// Text zentriert anzeigen
+void drawTextCentered(String text, int y, CRGB color) {
+  int textW = getTextWidth(text);
+  int x = (MATRIX_WIDTH - textW) / 2;  // Horizontal zentrieren
 
-  // Unteres physisches Panel (Pin 25) bekommt logisches OBEN (y=0..7)
-  for (uint8_t y = 0; y < panelHeight; y++) {
-    const uint8_t ySrc = y; // 0..7
-    for (uint8_t x = 0; x < panelWidth; x++) {
-      panelBottom(x, y) = canvas16(x, ySrc);
-    }
-  }
+  int pos = 0;
+  for (unsigned int i = 0; i < text.length(); i++) {
+    char c = text.charAt(i);
+    int index = -1;
 
-  // y-Achse-Spiegelung auf beiden Panels
-  mirrorPanelHorizontal(panelTop);
-  mirrorPanelHorizontal(panelBottom);
+    if (c >= '0' && c <= '9') index = c - '0';
+    else if (c == '.') index = 10;
+    else if (c == 'C') index = 11;
+    else if (c == '%') index = 12;
+    else if (c == 'm') index = 13;
+    else if (c == '/') index = 14;
+    else if (c == 's') index = 15;
+    else if (c == '*') index = 16;  // ° = '*' im String
+    else if (c == '-') index = 17;
+    else if (c == ' ') { pos += 2; continue; }  // Leerzeichen
 
-  // Kopfüber montiertes Panel (früher unten, jetzt oben) drehen
-  rotatePanel180(panelTop);
-}
-
-static void mirrorPanelHorizontal(
-  cLEDMatrix<panelWidth, panelHeight, VERTICAL_ZIGZAG_MATRIX> &panel
-) {
-  for (uint8_t y = 0; y < panelHeight; y++) {
-    for (uint8_t x = 0; x < panelWidth / 2; x++) {
-      const uint8_t xo = panelWidth - 1 - x;
-      CRGB tmp      = panel(x, y);
-      panel(x, y)   = panel(xo, y);
-      panel(xo, y)  = tmp;
-    }
-  }
-}
-
-static void rotatePanel180(
-  cLEDMatrix<panelWidth, panelHeight, VERTICAL_ZIGZAG_MATRIX> &panel
-) {
-  for (uint8_t y = 0; y < panelHeight; y++) {
-    for (uint8_t x = 0; x < panelWidth / 2; x++) {
-      const uint8_t xo = panelWidth - 1 - x;
-      const uint8_t yo = panelHeight - 1 - y;
-
-      CRGB tmp       = panel(x, y);
-      panel(x, y)    = panel(xo, yo);
-      panel(xo, yo)  = tmp;
+    if (index != -1) {
+      drawChar(index, x + pos, y, color);
+      pos += 4;
     }
   }
 }
 
-static void startSequenz() {
-  // oben = ledsBottom, unten = ledsTop
-  fill_solid(ledsBottom, ledsPerPanel, CRGB::Red);
-  fill_solid(ledsTop,    ledsPerPanel, CRGB::Blue);
-  FastLED.show();
-  delay(600);
-
-  fill_solid(ledsBottom, ledsPerPanel, CRGB::White);
-  fill_solid(ledsTop,    ledsPerPanel, CRGB::White);
-  FastLED.show();
-  delay(400);
-
-  fill_solid(ledsBottom, ledsPerPanel, CRGB::Black);
-  fill_solid(ledsTop,    ledsPerPanel, CRGB::Black);
-  FastLED.show();
-}
-
-// -----------------------------------------------------------------------------
-// WLAN & Wetter
-// -----------------------------------------------------------------------------
-static void connectToWifi() {
-  Serial.print(F("Verbinde mit WLAN: "));
-  Serial.println(wifiSsid);
+// WLAN verbinden (mit Retries und Timeout)
+void connectWiFi() {
+  Serial.println();
+  Serial.println("===========================================");
+  Serial.println("ESP32 unterstuetzt NUR 2.4 GHz WLAN!");
+  Serial.println("iPhone: Einstellungen > Persoenlicher Hotspot");
+  Serial.println("  -> 'Kompatibilitaet maximieren' AKTIVIEREN");
+  Serial.println("===========================================");
+  Serial.println();
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(wifiSsid, wifiPassword);
+  WiFi.disconnect(true);
+  delay(100);
 
-  uint8_t tries = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 30) {
+  Serial.print("Verbinde mit: ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  int tries = 0;
+  int maxTries = 40;  // 20 Sekunden Timeout
+
+  while (WiFi.status() != WL_CONNECTED && tries < maxTries) {
     delay(500);
     Serial.print(".");
     tries++;
+
+    // Nach 10 Versuchen nochmal neu versuchen
+    if (tries == 20) {
+      Serial.println();
+      Serial.println("Neuversuch...");
+      WiFi.disconnect(true);
+      delay(500);
+      WiFi.begin(ssid, password);
+    }
   }
+
   Serial.println();
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.print(F("WLAN verbunden, IP: "));
+    Serial.print("WLAN verbunden! IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println(F("WLAN-Verbindung fehlgeschlagen (Offline-Modus)."));
+    Serial.println("WLAN-Verbindung FEHLGESCHLAGEN!");
+    Serial.println("Pruefe: Ist 'Kompatibilitaet maximieren' aktiv?");
+    Serial.print("WiFi Status Code: ");
+    Serial.println(WiFi.status());
   }
 }
 
-static void updateWeatherIfNeeded() {
-  const uint32_t now = millis();
-
-  if (now - lastWeatherUpdateMs < weatherUpdateIntervalMs) {
-    return;
-  }
-
-  lastWeatherUpdateMs = now;
-
+// WLAN-Verbindung pruefen und ggf. neu verbinden
+void ensureWiFi() {
   if (WiFi.status() != WL_CONNECTED) {
-    connectToWifi();
-  }
-
-  if (!fetchWeatherAndBuildText()) {
-    Serial.println(F("Wetter-Update fehlgeschlagen, behalte bisherigen Text."));
+    Serial.println("WLAN verloren, verbinde neu...");
+    connectWiFi();
   }
 }
 
-/**
- * @brief Holt Wetterdaten von wttr.in (HTTPS + TLS) und baut den Lauftext.
- *
- * JSON-Struktur (vereinfacht):
- * {
- *   "current_condition": [
- *     {
- *       "temp_C": "5",
- *       "weatherDesc": [ { "value": "Partly cloudy" } ]
- *     }
- *   ],
- *   ...
- * }
- */
-static bool fetchWeatherAndBuildText() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println(F("Kein WLAN, überspringe Wetter-Update."));
-    return false;
+// Wetterdaten abrufen
+void fetchWeatherData(void *pvParameters) {
+  // Erstes Update sofort nach Verbindung
+  delay(2000);
+
+  while (true) {
+    ensureWiFi();
+
+    if (WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      http.setTimeout(10000);
+      http.begin(apiUrl);
+      int httpCode = http.GET();
+
+      if (httpCode == HTTP_CODE_OK) {
+        String payload = http.getString();
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, payload);
+
+        if (!error) {
+          temperature = doc["main"]["temp"];
+          humidity = doc["main"]["humidity"];
+          windSpeed = doc["wind"]["speed"];
+          dataReceived = true;
+          Serial.printf("Temp: %.1f°C | Humidity: %d%% | Wind: %.1f m/s\n",
+                        temperature, humidity, windSpeed);
+        } else {
+          Serial.print("JSON Fehler: ");
+          Serial.println(error.c_str());
+        }
+      } else {
+        Serial.print("HTTP Fehler: ");
+        Serial.println(httpCode);
+      }
+      http.end();
+    }
+    vTaskDelay(60000 / portTICK_PERIOD_MS);
   }
-
-  WiFiClientSecure client;
-  client.setInsecure();  // Zertifikat nicht prüfen (einfach, aber unsicher)
-
-  HTTPClient http;
-  Serial.print(F("GET "));
-  Serial.println(weatherApiUrl);
-
-  http.setTimeout(8000);
-  http.setUserAgent("ESP32-WeatherPanel/1.0");
-
-  if (!http.begin(client, weatherApiUrl)) {
-    Serial.println(F("http.begin() fehlgeschlagen."));
-    return false;
-  }
-
-  int httpCode = http.GET();
-  if (httpCode != HTTP_CODE_OK) {
-    Serial.print(F("HTTP Fehler: "));
-    Serial.println(httpCode);
-    http.end();
-    return false;
-  }
-
-  String payload = http.getString();
-  http.end();
-
-  StaticJsonDocument<4096> doc;
-  DeserializationError err = deserializeJson(doc, payload);
-  if (err) {
-    Serial.print(F("JSON Fehler: "));
-    Serial.println(err.c_str());
-    return false;
-  }
-
-  JsonObject current = doc["current_condition"][0];
-
-  const char* tempCStr = current["temp_C"] | "0";
-  const char* descStr  = current["weatherDesc"][0]["value"] | "No data";
-
-  float temp = atof(tempCStr);
-
-  String descr(descStr);
-  descr.toLowerCase();
-  descr.trim();           // trailing spaces bei "Partly Cloudy "
-  descr.replace(" ", "_");
-
-  String text = "   INNSBRUCK ";
-  text += String(temp, 1);
-  text += "C ";
-  text += descr;
-  text += "   ";
-
-  Serial.print(F("Neuer Wetter-Text: "));
-  Serial.println(text);
-
-  setLaufschriftText(text);
-  return true;
 }
 
-/**
- * @brief Schreibt einen String in den globalen Lauftext-Puffer
- *        und setzt ihn im LEDText-Objekt.
- */
-static void setLaufschriftText(const String& text) {
-  laufTextLen = text.length();
-  if (laufTextLen >= sizeof(laufTextBuffer)) {
-    laufTextLen = sizeof(laufTextBuffer) - 1;
+// Anzeige - zentriert und kompakt
+void updateDisplay(void *pvParameters) {
+  // Warten bis erste Daten da sind
+  while (!dataReceived) {
+    clearAll();
+    // "---" anzeigen waehrend geladen wird
+    drawTextCentered("---", 6, CRGB(80, 80, 80));
+    FastLED.show();
+    vTaskDelay(500 / portTICK_PERIOD_MS);
   }
 
-  text.substring(0, laufTextLen).toCharArray(laufTextBuffer,
-                                             sizeof(laufTextBuffer));
-  laufTextBuffer[laufTextLen] = '\0';
+  while (true) {
+    char buffer[16];
 
-  scrollingText.SetText((unsigned char*)laufTextBuffer,
-                        laufTextLen);
+    // === Temperatur (zentriert, vertikal: (16-5)/2 = 5) ===
+    clearAll();
+    if (temperature < 0) {
+      snprintf(buffer, sizeof(buffer), "-%.1f*C", -temperature);
+    } else {
+      snprintf(buffer, sizeof(buffer), "%.1f*C", temperature);
+    }
+    drawTextCentered(String(buffer), 6, CRGB::Green);
+    FastLED.show();
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+
+    // === Luftfeuchtigkeit (zentriert) ===
+    clearAll();
+    snprintf(buffer, sizeof(buffer), "%d%%", humidity);
+    drawTextCentered(String(buffer), 6, CRGB::Yellow);
+    FastLED.show();
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+
+    // === Windgeschwindigkeit (zentriert) ===
+    clearAll();
+    snprintf(buffer, sizeof(buffer), "%.1fm/s", windSpeed);
+    drawTextCentered(String(buffer), 6, CRGB::Blue);
+    FastLED.show();
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+  }
 }
 
-// -----------------------------------------------------------------------------
-// Debug
-// -----------------------------------------------------------------------------
-static void debugAusgabe() {
-  static uint32_t lastMs = 0;
-  const uint32_t now = millis();
-  if (now - lastMs < 250) return;
-  lastMs = now;
+void setup() {
+  Serial.begin(115200);
+  delay(100);
 
-  Serial.print(now);            Serial.print(F(";"));
-  Serial.print(brightness);     Serial.print(F(";"));
-  Serial.print(30);             Serial.print(F(";"));
-  Serial.print(canvasWidth16);  Serial.print(F(";"));
-  Serial.println(canvasHeight16);
+  FastLED.addLeds<WS2812B, DATA_PIN_UPPER, GRB>(leds_upper, NUM_LEDS_PER_STRIP);
+  FastLED.addLeds<WS2812B, DATA_PIN_LOWER, GRB>(leds_lower, NUM_LEDS_PER_STRIP);
+  FastLED.setBrightness(50);
+
+  for (int i = 0; i < NUM_LEDS_PER_STRIP; i++) {
+    leds_array[i] = leds_lower[i];
+    leds_array[i + NUM_LEDS_PER_STRIP] = leds_upper[i];
+  }
+  leds.SetLEDArray(leds_array);
+
+  clearAll();
+  FastLED.show();
+
+  // WLAN verbinden
+  connectWiFi();
+
+  // FreeRTOS Tasks
+  xTaskCreatePinnedToCore(fetchWeatherData, "WeatherTask", 8192, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(updateDisplay, "DisplayTask", 4096, NULL, 1, NULL, 1);
+}
+
+void loop() {
+  vTaskDelay(portMAX_DELAY);
 }
