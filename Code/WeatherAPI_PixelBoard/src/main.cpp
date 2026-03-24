@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <FastLED.h>
 #include <LEDMatrix.h>
@@ -14,8 +15,40 @@ const char* password = "Covquf012wud";
 
 // OpenWeatherMap API
 const char* apiKey = "711b0df3e461b3c35e8ca67b28920759";
-const char* city = "Innsbruck,AT";
+const char* city = "Kitzbühel,AT";
 String apiUrl = "http://api.openweathermap.org/data/2.5/weather?q=" + String(city) + "&units=metric&appid=" + String(apiKey);
+
+// Google Sheets Logging
+// Instructions: Deployment URL from Google Apps Script goes here
+const char* googleScriptUrl = "https://script.google.com/macros/s/AKfycbz-H7B0w1WvzmRptTft5Bbgp-7N0x3lPV3hnr3Kql-jB5gkr_9ytLLIUW9fmUZVFJI/exec";
+
+// Logging to Google Sheets
+void logDataToGoogleSheets(float temp, int hum, float wind) {
+  if (String(googleScriptUrl).length() < 10 || String(googleScriptUrl) == "YOUR_GOOGLE_SCRIPT_URL_HERE") {
+    Serial.println("[GoogleSheets] Skipping log: URL not configured.");
+    return;
+  }
+
+  Serial.println("[GoogleSheets] Logging data...");
+  WiFiClientSecure client;
+  client.setInsecure(); // No certificate verification for simplicity
+
+  HTTPClient http;
+  String url = String(googleScriptUrl) + "?temp=" + String(temp, 1) + "&hum=" + String(hum) + "&wind=" + String(wind, 1);
+  
+  if (http.begin(client, url)) {
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      Serial.printf("[GoogleSheets] Success! HTTP Code: %d\n", httpCode);
+    } else {
+      Serial.printf("[GoogleSheets] Error: %s\n", http.errorToString(httpCode).c_str());
+    }
+    http.end();
+  } else {
+    Serial.println("[GoogleSheets] Error: Unable to begin connection.");
+  }
+}
 
 // Matrix-Konfiguration
 #define DATA_PIN_UPPER 25
@@ -244,6 +277,9 @@ void fetchWeatherData(void *pvParameters) {
           dataReceived = true;
           Serial.printf("Temp: %.1f°C | Humidity: %d%% | Wind: %.1f m/s\n",
                         temperature, humidity, windSpeed);
+          
+          // Log data to Google Sheets
+          logDataToGoogleSheets(temperature, humidity, windSpeed);
         } else {
           Serial.print("JSON Fehler: ");
           Serial.println(error.c_str());

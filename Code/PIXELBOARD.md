@@ -118,7 +118,7 @@ lib_deps =
 - Automatischer Neuversuch nach 10 Sekunden
 - `ensureWiFi()` prüft vor jedem API-Call und verbindet ggf. neu
 
-### 3.4 OpenWeatherMap API
+### 3.4 OpenWeatherMap API & Google Sheets Logging
 
 | Eigenschaft  | Wert                                     |
 |--------------|------------------------------------------|
@@ -126,14 +126,18 @@ lib_deps =
 | Stadt        | `Innsbruck,AT`                           |
 | Einheiten    | `metric` (Celsius, m/s)                  |
 | API-Key      | Im Code hinterlegt                       |
-| Protokoll    | **HTTP** (nicht HTTPS – spart Speicher auf dem ESP32) |
+| Protokoll    | **HTTP** (OpenWeatherMap) / **HTTPS** (Google Sheets) |
+| Logging      | **Google Sheets** via Google Apps Script |
 
-**Abgerufene Daten:**
+**Abgerufene & geloggte Daten:**
 - `main.temp` → Temperatur (°C)
 - `main.humidity` → Luftfeuchtigkeit (%)
 - `wind.speed` → Windgeschwindigkeit (m/s)
 
 **Update-Intervall:** 60 Sekunden (`vTaskDelay(60000)`)
+
+**Google Sheets Setup:**
+Siehe `INSTRUCTIONS_GOOGLE_SHEETS.md` für die Einrichtung des Google Apps Scripts.
 
 ### 3.5 FreeRTOS Tasks
 
