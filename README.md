@@ -292,7 +292,7 @@ Das erleichtert Fehlersuche direkt auf dem ESP32 erheblich.
 **HTL Anichstraße Innsbruck**  
 *Höhere Technische Bundeslehranstalt*
 
-🌐 [www.htl.tirol](https://www.htl.tirol)
+🌐 [www.htl.tirol](https://www.htlinn.ac.at)
 
 ### Abteilung
 **Wirtschaftsingenieure – Betriebsinformatik**
